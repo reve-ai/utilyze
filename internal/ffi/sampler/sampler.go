@@ -41,7 +41,12 @@ type Snapshot struct {
 	ComputeSOLPct *float64
 	MemorySOLPct  *float64
 	SMActivePct   *float64
-	Timestamp     time.Time
+	// Pipes holds the per-pipe pct_of_peak_sustained_elapsed values keyed by
+	// short pipe name (see Pipes). Compute/Memory SOL above are the max of
+	// the compute/memory subsets respectively; this map exposes the breakdown
+	// so consumers can see which pipe is the bottleneck.
+	Pipes     map[string]float64
+	Timestamp time.Time
 }
 
 func Init(deviceIds []int, metrics []string, interval time.Duration) (*Sampler, error) {
@@ -138,17 +143,25 @@ func (s *Sampler) metricValue(metric string) (float64, bool) {
 }
 
 func (s *Sampler) buildSnapshot(deviceId int) Snapshot {
-	var computeSolPct *float64
-	for _, metric := range smSubPipeMetrics {
-		if v, ok := s.metricValue(metric); ok && (computeSolPct == nil || v > *computeSolPct) {
-			computeSolPct = &v
+	pipes := make(map[string]float64, len(Pipes))
+	var computeSolPct, memorySolPct *float64
+	for _, p := range Pipes {
+		v, ok := s.metricValue(p.Metric)
+		if !ok {
+			continue
 		}
-	}
-
-	var memorySolPct *float64
-	for _, metric := range memMetrics {
-		if v, ok := s.metricValue(metric); ok && (memorySolPct == nil || v > *memorySolPct) {
-			memorySolPct = &v
+		pipes[p.Name] = v
+		switch p.Family {
+		case PipeFamilyCompute:
+			if computeSolPct == nil || v > *computeSolPct {
+				val := v
+				computeSolPct = &val
+			}
+		case PipeFamilyMemory:
+			if memorySolPct == nil || v > *memorySolPct {
+				val := v
+				memorySolPct = &val
+			}
 		}
 	}
 
@@ -162,6 +175,7 @@ func (s *Sampler) buildSnapshot(deviceId int) Snapshot {
 		ComputeSOLPct: computeSolPct,
 		MemorySOLPct:  memorySolPct,
 		SMActivePct:   smActivePct,
+		Pipes:         pipes,
 		Timestamp:     time.Now(),
 	}
 }

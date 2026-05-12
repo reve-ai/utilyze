@@ -1,13 +1,9 @@
 package metrics
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"math"
-	"net/http"
 	"os"
 	"sort"
 	"sync"
@@ -259,56 +255,11 @@ func (r *Reporter) clientIDs() []string {
 }
 
 func (r *Reporter) postMetrics(ctx context.Context, payload *MetricsPayload) {
-	postCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		slog.Debug("metrics: post metrics marshal error", "err", err)
-		return
-	}
-
-	slog.Debug("metrics: post metrics request", "url", r.config.BackendURL+"/metrics", "body", string(body))
-	start := time.Now()
-	request, err := http.NewRequestWithContext(postCtx, http.MethodPost, r.config.BackendURL+"/metrics", bytes.NewReader(body))
-	if err != nil {
-		slog.Debug("metrics: post metrics request error", "err", err)
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := http.DefaultClient.Do(request)
-	slog.Debug("metrics: post metrics responded", "duration", time.Since(start))
-	if err != nil {
-		slog.Debug("metrics: post metrics response error", "err", err)
-		return
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		slog.Debug("metrics: post metrics response not ok", "status", response.StatusCode, "body", string(body))
-		return
-	}
-
-	var metricsResponse MetricsResponse
-	if err := json.NewDecoder(response.Body).Decode(&metricsResponse); err != nil {
-		slog.Debug("metrics: post metrics response decode error", "err", err)
-		return
-	}
-	slog.Debug("metrics: post metrics response ceilings", "response", metricsResponse)
-
-	if r.config.OnCeiling != nil {
-		perGPU := make(map[int]GpuCeiling)
-		for _, g := range metricsResponse.GpuCeilings {
-			perGPU[g.Index] = GpuCeiling{
-				Index:             g.Index,
-				ModelName:         g.ModelName,
-				ComputeSolCeiling: g.ComputeSolCeiling,
-			}
-		}
-		r.config.OnCeiling(perGPU)
-	}
+	// External telemetry intentionally disabled: this build never contacts
+	// api.systalyze.com. The reporter is no longer wired from main.go either —
+	// see internal/metrics/otel.go for the OTLP exporter that replaces it.
+	_ = ctx
+	_ = payload
 }
 
 func hashToInt(s string) int {

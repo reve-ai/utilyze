@@ -54,7 +54,11 @@ func NewCollector(deviceIds []int, metricsInterval time.Duration) (*Collector, e
 type SOLSnapshot struct {
 	ComputePct float64
 	MemoryPct  float64
-	Valid      bool
+	// Pipes is the per-pipe SOL breakdown keyed by short pipe name (e.g.
+	// "tensor", "fma", "alu", "lsu_inst", "issue", "dram", "l1tex"). Compute
+	// and Memory above are the max of the compute and memory subsets.
+	Pipes map[string]float64
+	Valid bool
 }
 
 type BandwidthSnapshot struct {
@@ -109,6 +113,7 @@ func (c *Collector) Start(ctx context.Context, metrics chan MetricsSnapshot) {
 					if snapshot.ComputeSOLPct != nil && snapshot.MemorySOLPct != nil {
 						gpu.SOL.ComputePct = *snapshot.ComputeSOLPct
 						gpu.SOL.MemoryPct = *snapshot.MemorySOLPct
+						gpu.SOL.Pipes = snapshot.Pipes
 						gpu.SOL.Valid = true
 						hasData = true
 					}
