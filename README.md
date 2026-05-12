@@ -62,13 +62,37 @@ utlz --connect <SERVER_URL>
 
 Note that a single device ID can only be monitored by a single instance of `utlz`. This is due to the way NVIDIA's Perf SDK API handles device access.
 
-### Attainable SOL
+### Exporting metrics via OpenTelemetry
 
-Utilyze discovers running inference servers to detect which model is loaded on each GPU. It computes an attainable compute SOL ceiling (your realistic peak given that model and hardware).
+Utilyze can export per-GPU SOL metrics to an OpenTelemetry collector over OTLP (gRPC by default, HTTP optional). The exporter is off by default — enable it with `UTLZ_OTEL_ENABLED=1`. All standard `OTEL_EXPORTER_OTLP_*` environment variables are honored via the OpenTelemetry SDK.
 
-Currently Utilyze only supports vLLM as a backend, with more (e.g. SGLang) coming soon. We are expanding model and hardware coverage over time; at present we support a subset of models on H100-80G and A100-80G GPUs within a node (up to 8 GPUs).
+```bash
+sudo -E UTLZ_OTEL_ENABLED=1 \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
+    OTEL_EXPORTER_OTLP_INSECURE=true \
+    OTEL_METRIC_EXPORT_INTERVAL=10000 \
+    utlz
+```
 
-To enable this, Utilyze anonymously sends GPU configuration data to Systalyze's servers. Disable with `UTLZ_DISABLE_METRICS=1`.
+`sudo -E` matters — `sudo` strips environment variables by default, so `UTLZ_OTEL_ENABLED` would otherwise be lost and the exporter would stay disabled. Alternatively, set `NVreg_RestrictProfilingToAdminUsers=0` on the host (see [Running without sudo](#running-without-sudo)) so `utlz` doesn't need `sudo` at all.
+
+Each gauge carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes. See [Metrics reference](#metrics-reference) for the full list.
+
+#### OTEL configuration
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `UTLZ_OTEL_ENABLED` | Master switch; set to `1` to enable export | off |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | `localhost:4317` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` or `http/protobuf` | `grpc` |
+| `OTEL_EXPORTER_OTLP_INSECURE` | Skip TLS | `false` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth headers | — |
+| `OTEL_METRIC_EXPORT_INTERVAL` | Export period in milliseconds (OTEL spec) | 60000 |
+| `UTLZ_OTEL_EXPORT_INTERVAL` | Export period as Go duration (e.g. `10s`); wins over the above | — |
+| `OTEL_SERVICE_NAME` | Service name resource attribute | `utilyze` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Additional resource attributes (e.g. `k8s.node.name=...`) | — |
+
+Sampling cadence is independent of export cadence: the native sampler polls at 250 ms regardless. The exporter uses last-observed semantics, so each gauge reports the most recent 250 ms sample's value at export time — use `avg_over_time(...)` or similar at query time in your TSDB if you want windowed aggregates.
 
 ### Running without sudo
 
@@ -94,8 +118,49 @@ Flags (most have environment variable equivalents):
 Environment variables only:
 
 - `UTLZ_DISABLE_PROFILING_WARNING`: disable the warning about GPU profiling capabilities on startup
-- `UTLZ_BACKEND_URL`: set the backend URL for Systalyze's roofline SOL metrics API (default: `https://api.systalyze.com/v1/utilyze`)
-- `UTLZ_DISABLE_METRICS`: disable workload detection and Systalyze roofline SOL metrics API
+
+For OpenTelemetry-related variables see [OTEL configuration](#otel-configuration).
+
+## Metrics reference
+
+When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exporting-metrics-via-opentelemetry)), Utilyze emits four gauges per GPU per scrape — 10 datapoints total. Every value is in `pct_of_peak_sustained_elapsed` units (0–100). Every datapoint carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes.
+
+| Metric name | Type | Description |
+|---|---|---|
+| `utlz.gpu.sol.compute.pct` | Float64 gauge | Compute SOL — max of compute pipes (`tensor`, `fma`, `alu`, `lsu_inst`, `issue`) |
+| `utlz.gpu.sol.memory.pct` | Float64 gauge | Memory SOL — max of memory pipes (`dram`, `l1tex`) |
+| `utlz.gpu.sol.pipe.pct` | Float64 gauge | Per-pipe breakdown; additional `pipe=` attribute identifies the pipe |
+| `utlz.gpu.sm.active.pct` | Float64 gauge | DCGM-style `sm__cycles_active` — overall SM-busy fraction |
+
+The compute and memory roll-ups are strictly redundant with `utlz.gpu.sol.pipe.pct` and are provided for query ergonomics (e.g. one-shot Grafana panels). To save series cardinality, you can recompute them at query time and drop the roll-up gauges.
+
+### `utlz.gpu.sol.pipe.pct` — pipe attribute
+
+The `pipe=` attribute on `utlz.gpu.sol.pipe.pct` maps 1:1 to an underlying NVPerf counter:
+
+| `pipe=` | Underlying NVPerf metric | What it represents |
+|---|---|---|
+| `tensor` | `sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed` | Tensor core / matmul throughput |
+| `fma` | `sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_elapsed` | FP FMA pipe (scalar/vector floating-point math) |
+| `alu` | `sm__pipe_alu_cycles_active.avg.pct_of_peak_sustained_elapsed` | Integer / logical ALU pipe |
+| `lsu_inst` | `sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed` | LSU instruction issue rate (load/store pipe busy) |
+| `issue` | `sm__issue_active.avg.pct_of_peak_sustained_elapsed` | Warp scheduler issue rate |
+| `dram` | `dram__throughput.avg.pct_of_peak_sustained_elapsed` | HBM bandwidth |
+| `l1tex` | `l1tex__data_pipe_lsu_wavefronts.avg.pct_of_peak_sustained_elapsed` | L1 cache bandwidth |
+
+The first five contribute to Compute SOL; the last two contribute to Memory SOL.
+
+### Example PromQL
+
+```promql
+# Dominant compute pipe per GPU over the last 5 minutes
+topk(1,
+  avg_over_time(utlz_gpu_sol_pipe_pct{pipe=~"tensor|fma|alu|lsu_inst|issue"}[5m])
+) by (gpu_uuid)
+
+# Fleet-wide tensor-pipe underutilization (low tensor% with high compute SOL → fusion candidate)
+avg_over_time(utlz_gpu_sol_compute_pct[5m]) - avg_over_time(utlz_gpu_sol_pipe_pct{pipe="tensor"}[5m])
+```
 
 ## Build from source
 
