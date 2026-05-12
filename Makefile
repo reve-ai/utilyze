@@ -72,7 +72,10 @@ FULL_SMOKE_BURN_BIN = $(TEST_NATIVE_BIN_DIR)/cuda_burn
 INCLUDES = -I$(NVPW_INCLUDE) -I$(NVPW_UTIL_INCLUDE) -I$(CUDA_INCLUDE) -I$(NATIVE_INCLUDE)
 LIBS = -L$(CUDA_LIB) -L$(CUDA_CUPTI_LIB) -L$(CUDA_LIB)/stubs -lnvperf_host -lnvperf_target -lcuda -ldl -lpthread
 
-.PHONY: all clean check-native-platform native test-native-unit test-native-smoke test-native-smoke-full dist-tarball dist-tarball-docker utlz
+IMAGE_NAME ?= utilyze
+IMAGE_TAG ?= $(VERSION)
+
+.PHONY: all clean check-native-platform native test-native-unit test-native-smoke test-native-smoke-full dist-tarball dist-tarball-docker image-runtime utlz
 
 all: native
 	$(MAKE) utlz
@@ -177,6 +180,21 @@ dist-tarball-docker: | check-native-platform
 		--output type=local,dest=$(CURDIR)/dist \
 		.
 	@echo "Packaged: dist/$(LIB_NAME)-$(VERSION)-$(OS)-$(ARCH).tar.gz"
+
+# Build the runtime container image locally. CI (e.g. in reve-core) should
+# call docker buildx directly with --push and a registry-qualified --tag
+# instead of using this target.
+image-runtime:
+	$(DOCKER) buildx build \
+		--platform $(DOCKER_PLATFORM) \
+		--file $(DOCKERFILE) \
+		--target runtime \
+		--build-arg CUDA_VERSION=$(CUDA_VERSION) \
+		--build-arg CUDA_PKG_SUFFIX=$(CUDA_PKG_SUFFIX) \
+		--tag $(IMAGE_NAME):$(IMAGE_TAG) \
+		--load \
+		.
+	@echo "Built: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 -include $(DEPS)
 
