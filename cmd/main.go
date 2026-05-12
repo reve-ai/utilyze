@@ -34,11 +34,10 @@ import (
 )
 
 const (
-	resolution        = 500 * time.Millisecond
-	refreshInterval   = 1000 * time.Millisecond
-	metricsInterval   = 250 * time.Millisecond
-	inferenceCacheTTL = 30 * time.Second
-	vllmProbeTimeout  = 2 * time.Second
+	resolution       = 500 * time.Millisecond
+	refreshInterval  = 1000 * time.Millisecond
+	metricsInterval  = 250 * time.Millisecond
+	vllmProbeTimeout = 2 * time.Second
 
 	serviceModeEnv = "UTLZ_SERVICE_MODE"
 	serviceAddrEnv = "UTLZ_SERVICE_ADDR"
@@ -104,8 +103,6 @@ func main() {
 		}
 		return
 	}
-
-	_ = version.CheckForUpdates(context.Background(), version.VERSION)
 
 	deviceIds, err := parseDeviceIDs(devices)
 	if err != nil {
@@ -275,20 +272,18 @@ func runServer(ctx context.Context, deviceIds []int, addr string, clientID strin
 	fmt.Fprintf(os.Stderr, "  utlz --connect %s\n", connUrl)
 
 	svc := service.NewService()
-	reporter, err := newMetricsReporter(collector.NVMLClient(), collector.MonitoredDeviceIDs(), clientID, svc.ConnectedClientIDs, func(perGPU map[int]metrics.GpuCeiling) {
-		svc.BroadcastCeilings(perGPU)
-	})
+
+	otelExporter, err := newOTELExporter(ctx, collector.NVMLClient(), collector.MonitoredDeviceIDs(), clientID)
 	if err != nil {
 		return err
 	}
-	if reporter != nil {
-		go reporter.Start(ctx)
-		defer reporter.Stop()
+	if otelExporter != nil {
+		defer otelExporter.Shutdown(context.Background())
 	}
 
 	go svc.RunCollector(ctx, collector, func(snapshot metrics.MetricsSnapshot) {
-		if reporter != nil {
-			reporter.Observe(snapshot)
+		if otelExporter != nil {
+			otelExporter.Observe(snapshot)
 		}
 	})
 
@@ -308,16 +303,12 @@ func runLocal(ctx context.Context, deviceIds []int, addr string, clientID string
 		}
 		defer collector.Close()
 
-		reporter, err := newMetricsReporter(collector.NVMLClient(), collector.MonitoredDeviceIDs(), clientID, svc.ConnectedClientIDs, func(perGPU map[int]metrics.GpuCeiling) {
-			svc.BroadcastCeilings(perGPU)
-			p.Send(top.RooflineCeilingMsg{PerGPU: convertCeilings(perGPU)})
-		})
+		otelExporter, err := newOTELExporter(ctx, collector.NVMLClient(), collector.MonitoredDeviceIDs(), clientID)
 		if err != nil {
 			return err
 		}
-		if reporter != nil {
-			go reporter.Start(ctx)
-			defer reporter.Stop()
+		if otelExporter != nil {
+			defer otelExporter.Shutdown(context.Background())
 		}
 
 		go func() {
@@ -328,8 +319,8 @@ func runLocal(ctx context.Context, deviceIds []int, addr string, clientID string
 
 		p.Send(top.InitMsg{DeviceIDs: collector.MonitoredDeviceIDs()})
 		svc.RunCollector(ctx, collector, func(snapshot metrics.MetricsSnapshot) {
-			if reporter != nil {
-				reporter.Observe(snapshot)
+			if otelExporter != nil {
+				otelExporter.Observe(snapshot)
 			}
 			p.Send(top.MetricsSnapshotMsg{Timestamp: snapshot.Timestamp, GPUs: snapshot.GPUs})
 		})
@@ -430,36 +421,23 @@ func newInferenceScanner(nvmlClient *nvml.Client, cacheTTL time.Duration) infere
 	)
 }
 
-func newMetricsReporter(
-	nvmlClient *nvml.Client,
-	monitoredDeviceIDs []int,
-	clientID string,
-	clientIDs func() []string,
-	onCeiling func(perGPU map[int]metrics.GpuCeiling),
-) (*metrics.Reporter, error) {
-	totalGpuCount, err := nvmlClient.GetDeviceCount()
-	if err != nil || totalGpuCount <= 0 {
-		return nil, fmt.Errorf("could not query GPU count: %w", err)
+func newOTELExporter(ctx context.Context, nvmlClient *nvml.Client, monitoredDeviceIDs []int, clientID string) (*metrics.OTELExporter, error) {
+	if os.Getenv("UTLZ_OTEL_ENABLED") != "1" {
+		return nil, nil
 	}
 
-	allNames := make([]string, totalGpuCount)
-	gpuIDs := make([]string, totalGpuCount)
-	for i := 0; i < totalGpuCount; i++ {
-		uuid, _ := nvmlClient.GetDeviceUUID(i)
-		allNames[i], _ = nvmlClient.GetDeviceName(i)
-		gpuIDs[i] = config.GenerateGpuID(uuid)
+	gpuNames := make(map[int]string, len(monitoredDeviceIDs))
+	gpuUUIDs := make(map[int]string, len(monitoredDeviceIDs))
+	for _, id := range monitoredDeviceIDs {
+		gpuNames[id], _ = nvmlClient.GetDeviceName(id)
+		gpuUUIDs[id], _ = nvmlClient.GetDeviceUUID(id)
 	}
 
-	return metrics.New(metrics.ReporterConfig{
-		ClientID:           clientID,
-		ClientIDs:          clientIDs,
-		GpuIDs:             gpuIDs,
-		GpuNames:           allNames,
-		TotalGpuCount:      totalGpuCount,
-		Inference:          newInferenceScanner(nvmlClient, inferenceCacheTTL),
-		MonitoredDeviceIDs: monitoredDeviceIDs,
-		OnCeiling:          onCeiling,
-	}), nil
+	return metrics.NewOTELExporter(ctx, metrics.OTELExporterConfig{
+		ClientID: clientID,
+		GpuNames: gpuNames,
+		GpuUUIDs: gpuUUIDs,
+	})
 }
 
 func parseDeviceIDs(envValue string) ([]int, error) {
