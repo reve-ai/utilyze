@@ -94,14 +94,6 @@ Each gauge carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes. See [Met
 
 Sampling cadence is independent of export cadence: the native sampler polls at 250 ms regardless. The exporter uses last-observed semantics, so each gauge reports the most recent 250 ms sample's value at export time — use `avg_over_time(...)` or similar at query time in your TSDB if you want windowed aggregates.
 
-### Attainable SOL
-
-Utilyze discovers running inference servers to detect which model is loaded on each GPU. It computes an attainable compute SOL ceiling (your realistic peak given that model and hardware).
-
-Currently Utilyze only supports vLLM as a backend, with more (e.g. SGLang) coming soon. We are expanding model and hardware coverage over time; at present we support a subset of models on H100-80G and A100-80G GPUs within a node (up to 8 GPUs).
-
-To enable this, Utilyze anonymously sends GPU configuration data to Systalyze's servers. Disable with `UTLZ_DISABLE_METRICS=1`.
-
 ### Running without sudo
 
 By default, NVIDIA restricts GPU profiling counters to admin users. To allow non-root access, disable the restriction on the host and reboot:
@@ -126,8 +118,8 @@ Flags (most have environment variable equivalents):
 Environment variables only:
 
 - `UTLZ_DISABLE_PROFILING_WARNING`: disable the warning about GPU profiling capabilities on startup
-- `UTLZ_BACKEND_URL`: set the backend URL for Systalyze's roofline SOL metrics API (default: `https://api.systalyze.com/v1/utilyze`)
-- `UTLZ_DISABLE_METRICS`: disable workload detection and Systalyze roofline SOL metrics API
+
+For OpenTelemetry-related variables see [OTEL configuration](#otel-configuration).
 
 ## Metrics reference
 
