@@ -179,6 +179,13 @@ make dist-tarball-docker
 
 # build the CLI only
 make utlz
+
+# build a runtime container image (utlz + CUPTI libs in nvidia/cuda base)
+make image-runtime
+# override the tag with IMAGE_NAME / IMAGE_TAG:
+#   IMAGE_NAME=registry.example.com/utilyze IMAGE_TAG=$(git rev-parse --short HEAD) make image-runtime
 ```
+
+The `image-runtime` target produces a local image suitable for running utilyze as a Kubernetes DaemonSet. For CI-driven multi-arch builds with push, invoke `docker buildx build --target runtime` directly with `--platform linux/amd64,linux/arm64 --push` and a registry-qualified tag.
 
 There is experimental support for ARM64 builds using the sbsa-linux CUDA target.
