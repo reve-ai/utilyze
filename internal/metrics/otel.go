@@ -63,14 +63,17 @@ func NewOTELExporter(ctx context.Context, cfg OTELExporterConfig) (*OTELExporter
 		return nil, fmt.Errorf("otlp metric exporter: %w", err)
 	}
 
+	// Order matters: defaults first, then WithFromEnv last so OTEL_SERVICE_NAME
+	// and OTEL_RESOURCE_ATTRIBUTES can override. Putting WithAttributes after
+	// WithFromEnv (the previous arrangement) silently ignored the env vars.
 	res, err := resource.New(ctx,
-		resource.WithFromEnv(),
-		resource.WithHost(),
-		resource.WithProcess(),
 		resource.WithAttributes(
 			semconv.ServiceName("utilyze"),
 			semconv.ServiceInstanceID(cfg.ClientID),
 		),
+		resource.WithHost(),
+		resource.WithProcess(),
+		resource.WithFromEnv(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("otel resource: %w", err)
