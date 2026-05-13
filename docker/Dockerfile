@@ -16,13 +16,17 @@ ARG GCC_TOOLSET=gcc-toolset-12
 ARG GO_VERSION=1.25
 ARG RUNTIME_BASE=nvidia/cuda:13.1.0-base-ubuntu22.04
 
+# ARG expansion in `COPY --from=` does not pick up per-stage ARGs (the image
+# ref is resolved during graph parsing), so route the Go toolchain through a
+# named stage where the global ARG expands in `FROM`.
+FROM golang:${GO_VERSION} AS go-toolchain
+
 FROM rockylinux:8 AS builder
 
 ARG TARGETARCH
 ARG CUDA_VERSION
 ARG CUDA_PKG_SUFFIX
 ARG GCC_TOOLSET
-ARG GO_VERSION
 
 ENV PATH=/opt/rh/${GCC_TOOLSET}/root/usr/bin:/usr/local/cuda-${CUDA_VERSION}/bin:/usr/local/go/bin:${PATH} \
     LD_LIBRARY_PATH=/opt/rh/${GCC_TOOLSET}/root/usr/lib64
@@ -50,7 +54,7 @@ RUN set -eux; \
 
 # Bring in the Go toolchain. The `go` binary is statically linked, so the
 # Debian-built tree runs fine on this rocky 8 builder.
-COPY --from=golang:${GO_VERSION} /usr/local/go /usr/local/go
+COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 WORKDIR /src
 COPY . .
