@@ -123,16 +123,23 @@ For OpenTelemetry-related variables see [OTEL configuration](#otel-configuration
 
 ## Metrics reference
 
-When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exporting-metrics-via-opentelemetry)), Utilyze emits four gauges per GPU per scrape — 10 datapoints total. Every value is in `pct_of_peak_sustained_elapsed` units (0–100). Every datapoint carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes.
+When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exporting-metrics-via-opentelemetry)), Utilyze emits each measurement in two forms — a **gauge** (last observed value at export time, for live-state queries) and a **histogram** (distribution over the export window, for analysis queries). Every value is in `pct_of_peak_sustained_elapsed` units (0–100). Every datapoint carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes.
 
-| Metric name | Type | Description |
+| Gauge | Histogram | Description |
 |---|---|---|
-| `utlz.gpu.sol.compute.pct` | Float64 gauge | Compute SOL — max of compute pipes (`tensor`, `fma`, `alu`, `lsu_inst`, `issue`) |
-| `utlz.gpu.sol.memory.pct` | Float64 gauge | Memory SOL — max of memory pipes (`dram`, `l1tex`) |
-| `utlz.gpu.sol.pipe.pct` | Float64 gauge | Per-pipe breakdown; additional `pipe=` attribute identifies the pipe |
-| `utlz.gpu.sm.active.pct` | Float64 gauge | DCGM-style `sm__cycles_active` — overall SM-busy fraction |
+| `utlz.gpu.sol.compute.pct` | `utlz.gpu.sol.compute.pct.distribution` | Compute SOL — max of compute pipes (`tensor`, `fma`, `alu`, `lsu_inst`, `issue`) |
+| `utlz.gpu.sol.memory.pct` | `utlz.gpu.sol.memory.pct.distribution` | Memory SOL — max of memory pipes (`dram`, `l1tex`) |
+| `utlz.gpu.sol.pipe.pct` | `utlz.gpu.sol.pipe.pct.distribution` | Per-pipe breakdown; additional `pipe=` attribute identifies the pipe |
+| `utlz.gpu.sm.active.pct` | `utlz.gpu.sm.active.pct.distribution` | DCGM-style `sm__cycles_active` — overall SM-busy fraction |
 
-The compute and memory roll-ups are strictly redundant with `utlz.gpu.sol.pipe.pct` and are provided for query ergonomics (e.g. one-shot Grafana panels). To save series cardinality, you can recompute them at query time and drop the roll-up gauges.
+The compute and memory roll-ups are strictly redundant with `utlz.gpu.sol.pipe.pct` (gauge or histogram) and are provided for query ergonomics. To minimize series cardinality, you can recompute them at query time and drop the roll-up instruments.
+
+### Gauge vs histogram — which to use
+
+- **Gauges** (last-observed): one float64 per (metric, attribute set) per export. Use for Grafana "current state" panels and alert thresholds.
+- **Histograms** (explicit-bucket distribution): bucket counts aggregating every 250 ms sample within the export window. Bucket boundaries are `[1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99]`. Use for `quantilesExact()` queries and any analysis that cares about the shape of GPU utilization over time. Histograms are exported with **delta** temporality — each row is self-contained.
+
+At a 30s export interval, each histogram aggregates ~120 native-sampler ticks per series. Storage cost in ClickHouse is roughly 3× the gauge-only equivalent.
 
 ### `utlz.gpu.sol.pipe.pct` — pipe attribute
 
@@ -150,7 +157,9 @@ The `pipe=` attribute on `utlz.gpu.sol.pipe.pct` maps 1:1 to an underlying NVPer
 
 The first five contribute to Compute SOL; the last two contribute to Memory SOL.
 
-### Example PromQL
+### Example queries
+
+PromQL (gauge-based, live-state):
 
 ```promql
 # Dominant compute pipe per GPU over the last 5 minutes
@@ -160,6 +169,22 @@ topk(1,
 
 # Fleet-wide tensor-pipe underutilization (low tensor% with high compute SOL → fusion candidate)
 avg_over_time(utlz_gpu_sol_compute_pct[5m]) - avg_over_time(utlz_gpu_sol_pipe_pct{pipe="tensor"}[5m])
+```
+
+ClickHouse (histogram-based, window-distribution):
+
+```sql
+-- p95 tensor-pipe utilization per GPU over the last hour, from the histogram
+SELECT
+  Attributes['gpu.uuid'] AS gpu,
+  quantileExactWeighted(0.95)(arrayJoin(ExplicitBounds), arrayJoin(BucketCounts)) AS p95_pct
+FROM otel_metrics_histogram
+WHERE MetricName = 'utlz.gpu.sol.pipe.pct.distribution'
+  AND Attributes['pipe'] = 'tensor'
+  AND TimeUnix > now() - INTERVAL 1 HOUR
+GROUP BY gpu
+ORDER BY p95_pct
+LIMIT 50;
 ```
 
 ## Build from source
