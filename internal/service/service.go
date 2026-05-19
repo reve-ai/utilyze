@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -16,6 +18,8 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/systalyze/utilyze/internal/metrics"
 )
+
+var disableSampler = os.Getenv("UTLZ_DISABLE_SAMPLER") == "1"
 
 const (
 	DefaultHost = "127.0.0.1"
@@ -94,6 +98,11 @@ func (s *Service) RunCollector(ctx context.Context, collector *metrics.Collector
 	s.SetDeviceIDs(collector.MonitoredDeviceIDs())
 
 	snapshots := make(chan metrics.MetricsSnapshot)
+	if disableSampler {
+		slog.Info("UTLZ_DISABLE_SAMPLER set")
+		close(snapshots)
+		return
+	}
 	go collector.Start(ctx, snapshots)
 
 	for snapshot := range snapshots {
