@@ -34,10 +34,10 @@ import (
 )
 
 const (
-	resolution       = 500 * time.Millisecond
-	refreshInterval  = 1000 * time.Millisecond
-	metricsInterval  = 250 * time.Millisecond
-	vllmProbeTimeout = 2 * time.Second
+	resolution             = 500 * time.Millisecond
+	refreshInterval        = 1000 * time.Millisecond
+	defaultMetricsInterval = 250 * time.Millisecond
+	vllmProbeTimeout       = 2 * time.Second
 
 	serviceModeEnv = "UTLZ_SERVICE_MODE"
 	serviceAddrEnv = "UTLZ_SERVICE_ADDR"
@@ -46,6 +46,8 @@ const (
 	serviceModeServer = "server"
 	serviceModeClient = "client"
 )
+
+var metricsInterval = defaultMetricsInterval
 
 type runConfig struct {
 	mode        string
@@ -89,6 +91,13 @@ func main() {
 			logw = f
 		}
 		slog.SetDefault(slog.New(slog.NewTextHandler(logw, &slog.HandlerOptions{Level: level})))
+	}
+
+	if s := os.Getenv("UTLZ_SAMPLE_INTERVAL_MS"); s != "" {
+		if ms, err := strconv.Atoi(s); err == nil && ms > 0 {
+			metricsInterval = time.Duration(ms) * time.Millisecond
+			slog.Info("UTLZ_SAMPLE_INTERVAL_MS set", "interval_ms", ms)
+		}
 	}
 
 	if showVersion {

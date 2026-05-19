@@ -3,6 +3,8 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"runtime"
 	"time"
 
@@ -15,9 +17,15 @@ type Collector struct {
 	sampler         *sampler.Sampler
 	metricsInterval time.Duration
 	deviceIds       []int
+	disableNVML     bool
 }
 
 func NewCollector(deviceIds []int, metricsInterval time.Duration) (*Collector, error) {
+	disableNVML := os.Getenv("UTLZ_DISABLE_NVML_POLL") == "1"
+	if disableNVML {
+		slog.Info("UTLZ_DISABLE_NVML_POLL set")
+	}
+
 	// Lock this goroutine to a single OS thread during initialization only. NVML init may retain a CUDA
 	// primary context that is thread-local; the sampler's BeginSession needs that context current on the
 	// same thread. After init, Poll only reads a ring buffer and doesn't need any CUDA context.
@@ -47,6 +55,7 @@ func NewCollector(deviceIds []int, metricsInterval time.Duration) (*Collector, e
 			sampler:         s,
 			metricsInterval: metricsInterval,
 			deviceIds:       s.InitializedDeviceIDs(),
+			disableNVML:     disableNVML,
 		}, nil
 	})
 }
@@ -124,25 +133,27 @@ func (c *Collector) Start(ctx context.Context, metrics chan MetricsSnapshot) {
 					}
 				}
 
-				utilizationSnapshot, err := c.nv.PollUtilization(deviceID, pollTime)
-				if err == nil && utilizationSnapshot.GPUUtilPct != nil {
-					gpu.NVMLUtilization.UtilPct = *utilizationSnapshot.GPUUtilPct
-					gpu.NVMLUtilization.Valid = true
-					hasData = true
-				}
+				if !c.disableNVML {
+					utilizationSnapshot, err := c.nv.PollUtilization(deviceID, pollTime)
+					if err == nil && utilizationSnapshot.GPUUtilPct != nil {
+						gpu.NVMLUtilization.UtilPct = *utilizationSnapshot.GPUUtilPct
+						gpu.NVMLUtilization.Valid = true
+						hasData = true
+					}
 
-				bandwidthSnapshot, err := c.nv.PollBandwidth(deviceID, pollTime)
-				if err == nil &&
-					bandwidthSnapshot.PCIeTxBps != nil &&
-					bandwidthSnapshot.PCIeRxBps != nil &&
-					bandwidthSnapshot.NVLinkTxBps != nil &&
-					bandwidthSnapshot.NVLinkRxBps != nil {
-					gpu.Bandwidth.PCIeTxBps = *bandwidthSnapshot.PCIeTxBps
-					gpu.Bandwidth.PCIeRxBps = *bandwidthSnapshot.PCIeRxBps
-					gpu.Bandwidth.NVLinkTxBps = *bandwidthSnapshot.NVLinkTxBps
-					gpu.Bandwidth.NVLinkRxBps = *bandwidthSnapshot.NVLinkRxBps
-					gpu.Bandwidth.Valid = true
-					hasData = true
+					bandwidthSnapshot, err := c.nv.PollBandwidth(deviceID, pollTime)
+					if err == nil &&
+						bandwidthSnapshot.PCIeTxBps != nil &&
+						bandwidthSnapshot.PCIeRxBps != nil &&
+						bandwidthSnapshot.NVLinkTxBps != nil &&
+						bandwidthSnapshot.NVLinkRxBps != nil {
+						gpu.Bandwidth.PCIeTxBps = *bandwidthSnapshot.PCIeTxBps
+						gpu.Bandwidth.PCIeRxBps = *bandwidthSnapshot.PCIeRxBps
+						gpu.Bandwidth.NVLinkTxBps = *bandwidthSnapshot.NVLinkTxBps
+						gpu.Bandwidth.NVLinkRxBps = *bandwidthSnapshot.NVLinkRxBps
+						gpu.Bandwidth.Valid = true
+						hasData = true
+					}
 				}
 
 				if hasData {
