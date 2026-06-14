@@ -18,6 +18,14 @@ const (
 	sym_nvmlDeviceGetName                       = "nvmlDeviceGetName"
 	sym_nvmlDeviceGetComputeRunningProcesses_v3 = "nvmlDeviceGetComputeRunningProcesses_v3"
 	sym_nvmlDeviceGetComputeRunningProcesses_v2 = "nvmlDeviceGetComputeRunningProcesses_v2"
+	sym_nvmlDeviceGetTemperature                = "nvmlDeviceGetTemperature"
+	sym_nvmlDeviceGetPowerUsage                 = "nvmlDeviceGetPowerUsage"
+	sym_nvmlDeviceGetEnforcedPowerLimit         = "nvmlDeviceGetEnforcedPowerLimit"
+	sym_nvmlDeviceGetClockInfo                  = "nvmlDeviceGetClockInfo"
+	sym_nvmlDeviceGetMemoryInfo                 = "nvmlDeviceGetMemoryInfo"
+	// NVML renamed this to nvmlDeviceGetCurrentClocksEventReasons in newer
+	// headers, but kept the original symbol exported for backward compat.
+	sym_nvmlDeviceGetCurrentClocksThrottleReasons = "nvmlDeviceGetCurrentClocksThrottleReasons"
 )
 
 const (
@@ -51,6 +59,38 @@ type nvmlUtilization struct {
 	GPU    uint32
 	Memory uint32
 }
+
+type nvmlTemperatureSensors uint32
+
+const NVML_TEMPERATURE_GPU nvmlTemperatureSensors = 0
+
+type nvmlClockType uint32
+
+const (
+	NVML_CLOCK_GRAPHICS nvmlClockType = 0
+	NVML_CLOCK_SM       nvmlClockType = 1
+	NVML_CLOCK_MEM      nvmlClockType = 2
+)
+
+// ref: https://github.com/NVIDIA/nvidia-settings/blob/bb364318e301b0702ab2a6f6a5e84321ee966e11/src/nvml.h#L227
+type nvmlMemory struct {
+	Total uint64
+	Free  uint64
+	Used  uint64
+}
+
+// Clock throttle reason bits (nvmlClocksThrottleReason*). Exported so the
+// metrics layer can decode the bitmask into per-reason indicators. We surface
+// only the actionable "something is wrong / capping" reasons; idle and
+// application-clock-setting reasons are intentionally omitted.
+// ref: https://docs.nvidia.com/deploy/nvml-api/group__nvmlClocksThrottleReasons.html
+const (
+	ThrottleReasonSwPowerCap   uint64 = 0x0000000000000004
+	ThrottleReasonHwSlowdown   uint64 = 0x0000000000000008
+	ThrottleReasonSwThermal    uint64 = 0x0000000000000020
+	ThrottleReasonHwThermal    uint64 = 0x0000000000000040
+	ThrottleReasonHwPowerBrake uint64 = 0x0000000000000080
+)
 
 const (
 	NVML_FEATURE_DISABLED uint32 = 0
@@ -119,4 +159,13 @@ var (
 	// _v3 (preferred) or _v2 (older driver fallback). Both accept the same
 	// argument layout; v3 populates GpuInstanceId/ComputeInstanceId for MIG.
 	nvmlDeviceGetComputeRunningProcesses func(device nvmlDeviceHandle, count *uint32, infos []nvmlProcessInfo) nvmlReturn
+
+	// Optional health symbols; nil if the running driver does not export them.
+	// Each call site nil-guards before use.
+	nvmlDeviceGetTemperature                  func(device nvmlDeviceHandle, sensorType nvmlTemperatureSensors, temp *uint32) nvmlReturn
+	nvmlDeviceGetPowerUsage                   func(device nvmlDeviceHandle, milliwatts *uint32) nvmlReturn
+	nvmlDeviceGetEnforcedPowerLimit           func(device nvmlDeviceHandle, limitMW *uint32) nvmlReturn
+	nvmlDeviceGetClockInfo                    func(device nvmlDeviceHandle, clockType nvmlClockType, clockMHz *uint32) nvmlReturn
+	nvmlDeviceGetMemoryInfo                   func(device nvmlDeviceHandle, memory *nvmlMemory) nvmlReturn
+	nvmlDeviceGetCurrentClocksThrottleReasons func(device nvmlDeviceHandle, reasons *uint64) nvmlReturn
 )

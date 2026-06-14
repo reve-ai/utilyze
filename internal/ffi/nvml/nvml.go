@@ -31,6 +31,27 @@ type UtilizationSnapshot struct {
 	DeviceID   int
 	Timestamp  time.Time
 	GPUUtilPct *float64
+	// MemUtilPct is the percent of time the memory controller was busy
+	// (nvmlUtilization.memory). It is returned by the same driver call as
+	// GPUUtilPct, so it costs nothing extra.
+	MemUtilPct *float64
+}
+
+// HealthSnapshot holds cheap per-device driver readings (no GPU stall). Every
+// field is a pointer so a value the running driver does not support is simply
+// omitted rather than reported as zero. ThrottleReasons is the raw
+// nvmlClocksThrottleReason bitmask; decode it with the ThrottleReason* consts.
+type HealthSnapshot struct {
+	DeviceID        int
+	Timestamp       time.Time
+	TempC           *float64
+	PowerW          *float64
+	PowerLimitW     *float64
+	SMClockMHz      *float64
+	MemClockMHz     *float64
+	MemUsedBytes    *float64
+	MemTotalBytes   *float64
+	ThrottleReasons *uint64
 }
 
 type deviceState struct {
@@ -258,11 +279,76 @@ func (n *Client) PollUtilization(deviceID int, now time.Time) (UtilizationSnapsh
 		return UtilizationSnapshot{}, fmt.Errorf("nvmlDeviceGetUtilizationRates(%d): %d", deviceID, ret)
 	}
 	gpuUtilPct := float64(utilization.GPU)
+	memUtilPct := float64(utilization.Memory)
 	return UtilizationSnapshot{
 		DeviceID:   deviceID,
 		Timestamp:  now,
 		GPUUtilPct: &gpuUtilPct,
+		MemUtilPct: &memUtilPct,
 	}, nil
+}
+
+// PollHealth reads cheap driver-side health counters (temperature, power,
+// clocks, memory, throttle reasons). Each reading is independent and best
+// effort: an unsupported field is left nil rather than failing the whole poll.
+func (n *Client) PollHealth(deviceID int, now time.Time) (HealthSnapshot, error) {
+	device, err := n.device(deviceID)
+	if err != nil {
+		return HealthSnapshot{}, err
+	}
+
+	snapshot := HealthSnapshot{DeviceID: deviceID, Timestamp: now}
+
+	if nvmlDeviceGetTemperature != nil {
+		var tempC uint32
+		if nvmlDeviceGetTemperature(device.handle, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS {
+			v := float64(tempC)
+			snapshot.TempC = &v
+		}
+	}
+	if nvmlDeviceGetPowerUsage != nil {
+		var milliwatts uint32
+		if nvmlDeviceGetPowerUsage(device.handle, &milliwatts) == NVML_SUCCESS {
+			v := float64(milliwatts) / 1000
+			snapshot.PowerW = &v
+		}
+	}
+	if nvmlDeviceGetEnforcedPowerLimit != nil {
+		var limitMW uint32
+		if nvmlDeviceGetEnforcedPowerLimit(device.handle, &limitMW) == NVML_SUCCESS {
+			v := float64(limitMW) / 1000
+			snapshot.PowerLimitW = &v
+		}
+	}
+	if nvmlDeviceGetClockInfo != nil {
+		var smMHz uint32
+		if nvmlDeviceGetClockInfo(device.handle, NVML_CLOCK_SM, &smMHz) == NVML_SUCCESS {
+			v := float64(smMHz)
+			snapshot.SMClockMHz = &v
+		}
+		var memMHz uint32
+		if nvmlDeviceGetClockInfo(device.handle, NVML_CLOCK_MEM, &memMHz) == NVML_SUCCESS {
+			v := float64(memMHz)
+			snapshot.MemClockMHz = &v
+		}
+	}
+	if nvmlDeviceGetMemoryInfo != nil {
+		var mem nvmlMemory
+		if nvmlDeviceGetMemoryInfo(device.handle, &mem) == NVML_SUCCESS {
+			used := float64(mem.Used)
+			total := float64(mem.Total)
+			snapshot.MemUsedBytes = &used
+			snapshot.MemTotalBytes = &total
+		}
+	}
+	if nvmlDeviceGetCurrentClocksThrottleReasons != nil {
+		var reasons uint64
+		if nvmlDeviceGetCurrentClocksThrottleReasons(device.handle, &reasons) == NVML_SUCCESS {
+			snapshot.ThrottleReasons = &reasons
+		}
+	}
+
+	return snapshot, nil
 }
 
 type ProcessInfo struct {
