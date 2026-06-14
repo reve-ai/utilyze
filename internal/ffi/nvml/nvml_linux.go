@@ -64,4 +64,21 @@ func loadSymbols(lib uintptr) {
 		purego.RegisterLibFunc(&nvmlDeviceGetComputeRunningProcesses, lib,
 			sym_nvmlDeviceGetComputeRunningProcesses_v2)
 	}
+
+	// Optional health symbols. Register each only if present so an older driver
+	// degrades gracefully (the corresponding metric is simply not emitted).
+	registerOptional(lib, &nvmlDeviceGetTemperature, sym_nvmlDeviceGetTemperature)
+	registerOptional(lib, &nvmlDeviceGetPowerUsage, sym_nvmlDeviceGetPowerUsage)
+	registerOptional(lib, &nvmlDeviceGetEnforcedPowerLimit, sym_nvmlDeviceGetEnforcedPowerLimit)
+	registerOptional(lib, &nvmlDeviceGetClockInfo, sym_nvmlDeviceGetClockInfo)
+	registerOptional(lib, &nvmlDeviceGetMemoryInfo, sym_nvmlDeviceGetMemoryInfo)
+	registerOptional(lib, &nvmlDeviceGetCurrentClocksThrottleReasons, sym_nvmlDeviceGetCurrentClocksThrottleReasons)
+}
+
+// registerOptional binds fn to sym only if the symbol resolves; otherwise fn is
+// left nil for call sites to guard against.
+func registerOptional[T any](lib uintptr, fn *T, sym string) {
+	if _, err := purego.Dlsym(lib, sym); err == nil {
+		purego.RegisterLibFunc(fn, lib, sym)
+	}
 }

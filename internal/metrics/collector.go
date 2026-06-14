@@ -84,8 +84,24 @@ type DCGMUtilizationSnapshot struct {
 }
 
 type NVMLUtilizationSnapshot struct {
-	UtilPct float64
-	Valid   bool
+	UtilPct    float64
+	MemUtilPct float64
+	Valid      bool
+}
+
+// HealthSnapshot holds cheap NVML driver readings. Pointer fields are nil when
+// the running driver does not support that reading. ThrottleReasons is the raw
+// nvmlClocksThrottleReason bitmask (decode with nvml.ThrottleReason* consts).
+type HealthSnapshot struct {
+	Valid           bool
+	TempC           *float64
+	PowerW          *float64
+	PowerLimitW     *float64
+	SMClockMHz      *float64
+	MemClockMHz     *float64
+	MemUsedBytes    *float64
+	MemTotalBytes   *float64
+	ThrottleReasons *uint64
 }
 
 type GPUSnapshot struct {
@@ -94,6 +110,7 @@ type GPUSnapshot struct {
 	Bandwidth       BandwidthSnapshot
 	DCGMUtilization DCGMUtilizationSnapshot
 	NVMLUtilization NVMLUtilizationSnapshot
+	Health          HealthSnapshot
 }
 
 type MetricsSnapshot struct {
@@ -137,7 +154,26 @@ func (c *Collector) Start(ctx context.Context, metrics chan MetricsSnapshot) {
 					utilizationSnapshot, err := c.nv.PollUtilization(deviceID, pollTime)
 					if err == nil && utilizationSnapshot.GPUUtilPct != nil {
 						gpu.NVMLUtilization.UtilPct = *utilizationSnapshot.GPUUtilPct
+						if utilizationSnapshot.MemUtilPct != nil {
+							gpu.NVMLUtilization.MemUtilPct = *utilizationSnapshot.MemUtilPct
+						}
 						gpu.NVMLUtilization.Valid = true
+						hasData = true
+					}
+
+					healthSnapshot, err := c.nv.PollHealth(deviceID, pollTime)
+					if err == nil {
+						gpu.Health = HealthSnapshot{
+							Valid:           true,
+							TempC:           healthSnapshot.TempC,
+							PowerW:          healthSnapshot.PowerW,
+							PowerLimitW:     healthSnapshot.PowerLimitW,
+							SMClockMHz:      healthSnapshot.SMClockMHz,
+							MemClockMHz:     healthSnapshot.MemClockMHz,
+							MemUsedBytes:    healthSnapshot.MemUsedBytes,
+							MemTotalBytes:   healthSnapshot.MemTotalBytes,
+							ThrottleReasons: healthSnapshot.ThrottleReasons,
+						}
 						hasData = true
 					}
 

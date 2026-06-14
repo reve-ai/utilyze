@@ -123,7 +123,9 @@ For OpenTelemetry-related variables see [OTEL configuration](#otel-configuration
 
 ## Metrics reference
 
-When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exporting-metrics-via-opentelemetry)), Utilyze emits four gauges per GPU per scrape — 10 datapoints total. Every value is in `pct_of_peak_sustained_elapsed` units (0–100). Every datapoint carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes.
+When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exporting-metrics-via-opentelemetry)), Utilyze emits SOL/utilization gauges plus interconnect-bandwidth gauges per GPU per scrape. Every datapoint carries `gpu.index`, `gpu.model`, and `gpu.uuid` attributes.
+
+The SOL gauges are in `pct_of_peak_sustained_elapsed` units (0–100):
 
 | Metric name | Type | Description |
 |---|---|---|
@@ -133,6 +135,34 @@ When OTEL export is enabled (see [Exporting metrics via OpenTelemetry](#exportin
 | `utlz.gpu.sm.active.pct` | Float64 gauge | DCGM-style `sm__cycles_active` — overall SM-busy fraction |
 
 The compute and memory roll-ups are strictly redundant with `utlz.gpu.sol.pipe.pct` and are provided for query ergonomics (e.g. one-shot Grafana panels). To save series cardinality, you can recompute them at query time and drop the roll-up gauges.
+
+The remaining gauges are sourced from NVML and emitted only when NVML polling is active (i.e. not disabled via `UTLZ_DISABLE_NVML_POLL`). They are cheap driver-side reads and do not perturb the workload.
+
+Interconnect throughput, in bytes/sec (`By/s`):
+
+| Metric name | Type | Description |
+|---|---|---|
+| `utlz.gpu.pcie.tx.bps` | Float64 gauge | PCIe transmit throughput (bytes/sec) |
+| `utlz.gpu.pcie.rx.bps` | Float64 gauge | PCIe receive throughput (bytes/sec) |
+| `utlz.gpu.nvlink.tx.bps` | Float64 gauge | NVLink transmit throughput, summed over active links (bytes/sec) |
+| `utlz.gpu.nvlink.rx.bps` | Float64 gauge | NVLink receive throughput, summed over active links (bytes/sec) |
+
+Utilization and device health:
+
+| Metric name | Type | Unit | Description |
+|---|---|---|---|
+| `utlz.gpu.util.pct` | Float64 gauge | 0–100 | NVML overall GPU utilization — the `nvidia-smi` GPU-Util number |
+| `utlz.gpu.mem.util.pct` | Float64 gauge | 0–100 | NVML memory-controller utilization (% of time the controller was busy) |
+| `utlz.gpu.temperature.celsius` | Float64 gauge | °C | GPU core temperature |
+| `utlz.gpu.power.watts` | Float64 gauge | W | Board power draw |
+| `utlz.gpu.power.limit.watts` | Float64 gauge | W | Enforced power limit |
+| `utlz.gpu.clock.sm.mhz` | Float64 gauge | MHz | Current SM clock |
+| `utlz.gpu.clock.mem.mhz` | Float64 gauge | MHz | Current memory clock |
+| `utlz.gpu.mem.used.bytes` | Float64 gauge | By | HBM memory in use |
+| `utlz.gpu.mem.total.bytes` | Float64 gauge | By | Total HBM memory |
+| `utlz.gpu.clocks.throttle` | Float64 gauge | 0/1 | Clock throttle active per `reason=` attribute |
+
+The `reason=` attribute on `utlz.gpu.clocks.throttle` is one of `sw_power_cap`, `hw_slowdown`, `sw_thermal`, `hw_thermal`, `hw_power_brake` — the actionable throttle causes. A value of `1` means that cause is currently capping clocks. This is the missing half of SOL: a low `utlz.gpu.sol.*` paired with `utlz.gpu.clocks.throttle{reason="hw_thermal"}=1` tells you the GPU is underperforming because it is throttling, not because the workload is light. Individual NVML fields a given driver/board does not support are simply omitted rather than reported as zero.
 
 ### `utlz.gpu.sol.pipe.pct` — pipe attribute
 
